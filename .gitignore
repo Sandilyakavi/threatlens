@@ -6,3 +6,4 @@ data/raw/*
 data/processed/*
 logs/*
 .pytest_cache/
+data/*.db
