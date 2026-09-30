@@ -1,10 +1,15 @@
+from pathlib import Path
+
 from threatlens.database.connection import get_connection
 
 
-def initialize_database() -> None:
+def initialize_database(database_path: Path | None = None) -> None:
     """Create the ThreatLens database schema."""
 
-    connection = get_connection()
+    if database_path is None:
+        connection = get_connection()
+    else:
+        connection = get_connection(database_path)
 
     connection.execute(
         """
@@ -18,7 +23,8 @@ def initialize_database() -> None:
             threat_type TEXT,
             first_seen TEXT,
             last_seen TEXT,
-            created_at TEXT NOT NULL
+            created_at TEXT NOT NULL,
+            UNIQUE(value, ioc_type)
         )
         """
     )
