@@ -1,3 +1,4 @@
+
 from dataclasses import dataclass
 
 from threatlens.collectors.feodo import fetch_feed, parse_feed
@@ -33,17 +34,16 @@ def ingest_feodo() -> IngestionResult:
 
     for ioc in iocs:
         try:
-            existing_ioc = repository.find_by_value(ioc.value)
+            _, is_new = repository.add_with_status(ioc)
 
-            repository.add(ioc)
-
-            if existing_ioc is None:
+            if is_new:
                 new += 1
             else:
                 existing += 1
 
-        except Exception:
+        except (ValueError, TypeError, RuntimeError) as exc:
             skipped += 1
+            print(f"Failed to ingest IOC {ioc.value}: {exc}")
 
     return IngestionResult(
         feed="feodo-tracker",
