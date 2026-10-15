@@ -3,8 +3,10 @@ from datetime import datetime, timezone
 from enum import Enum
 
 
+
 class IOCType(str, Enum):
     IP = "ip"
+    IP_PORT = "ip_port"
     DOMAIN = "domain"
     URL = "url"
     HASH_MD5 = "hash_md5"
