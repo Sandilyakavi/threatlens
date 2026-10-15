@@ -143,14 +143,18 @@ class IOCRepository:
         finally:
             connection.close()
 
-    def get_sources(self, value: str) -> list[dict]:
-        """Return all intelligence sources associated with an IOC."""
+
+    def get_sources(
+        self,
+        value: str,
+        ioc_type: str | None = None,
+    ) -> list[dict]:
+        """Return intelligence sources associated with an IOC."""
 
         connection = get_connection(self.database_path)
 
         try:
-            rows = connection.execute(
-                """
+            query = """
                 SELECT
                     s.source_name,
                     s.source_first_seen,
@@ -160,12 +164,125 @@ class IOCRepository:
                 FROM ioc_sources AS s
                 JOIN iocs AS i ON i.id = s.ioc_id
                 WHERE i.value = ?
-                ORDER BY s.source_name
+            """
+            params: tuple = (value,)
+
+            if ioc_type is not None:
+                query += " AND i.ioc_type = ?"
+                params += (ioc_type,)
+
+            query += " ORDER BY s.source_name"
+
+            rows = connection.execute(query, params).fetchall()
+            return [dict(row) for row in rows]
+
+        finally:
+            connection.close()
+
+    def get_correlation(
+        self,
+        value: str,
+        ioc_type: str | None = None,
+    ) -> dict | None:
+        """Return an IOC with its source count and source evidence."""
+
+        connection = get_connection(self.database_path)
+
+        try:
+            query = """
+                SELECT
+                    i.*,
+                    COUNT(DISTINCT s.source_name) AS source_count
+                FROM iocs AS i
+                LEFT JOIN ioc_sources AS s ON s.ioc_id = i.id
+                WHERE i.value = ?
+            """
+            params: tuple = (value,)
+
+            if ioc_type is not None:
+                query += " AND i.ioc_type = ?"
+                params += (ioc_type,)
+
+            query += " GROUP BY i.id ORDER BY i.id LIMIT 1"
+
+            row = connection.execute(query, params).fetchone()
+
+            if row is None:
+                return None
+
+            result = dict(row)
+            result["sources"] = self.get_sources(
+                value,
+                result["ioc_type"],
+            )
+            result["is_multi_source"] = result["source_count"] > 1
+
+            return result
+
+        finally:
+            connection.close()
+
+    def get_multi_source_iocs(self, min_sources: int = 2) -> list[dict]:
+        """List IOCs observed by at least min_sources distinct sources."""
+
+        if min_sources < 2:
+            raise ValueError("min_sources must be at least 2")
+
+        connection = get_connection(self.database_path)
+
+        try:
+            rows = connection.execute(
+                """
+                SELECT
+                    i.*,
+                    COUNT(DISTINCT s.source_name) AS source_count,
+                    GROUP_CONCAT(
+                        DISTINCT s.source_name
+                    ) AS source_names
+                FROM iocs AS i
+                JOIN ioc_sources AS s ON s.ioc_id = i.id
+                GROUP BY i.id
+                HAVING COUNT(DISTINCT s.source_name) >= ?
+                ORDER BY source_count DESC, i.value ASC
                 """,
-                (value,),
+                (min_sources,),
             ).fetchall()
 
             return [dict(row) for row in rows]
+
+        finally:
+            connection.close()
+
+
+
+    def get_correlation(self, value: str) -> dict | None:
+        """Return an IOC with its source count and source evidence."""
+
+        connection = get_connection(self.database_path)
+
+        try:
+            row = connection.execute(
+                """
+                SELECT
+                    i.*,
+                    COUNT(s.id) AS source_count
+                FROM iocs AS i
+                LEFT JOIN ioc_sources AS s ON s.ioc_id = i.id
+                WHERE i.value = ?
+                GROUP BY i.id
+                LIMIT 1
+                """,
+                (value,),
+            ).fetchone()
+
+            if row is None:
+                return None
+
+            result = dict(row)
+            result["sources"] = self.get_sources(value)
+            result["is_multi_source"] = result["source_count"] > 1
+
+            return result
 
         finally:
             connection.close()

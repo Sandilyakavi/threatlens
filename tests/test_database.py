@@ -1,4 +1,5 @@
-
+import pytest
+from threatlens.models.ioc import IOC, IOCType
 from threatlens.database.schema import initialize_database
 from threatlens.database.ioc_repository import IOCRepository
 from threatlens.models.ioc import IOC, IOCType, ThreatLevel
@@ -125,3 +126,75 @@ def test_add_with_status_reports_existing_ioc(tmp_path):
     assert first_is_new is True
     assert second_is_new is False
     assert repository.count() == 1
+
+def test_correlation_identifies_multiple_sources(tmp_path):
+    database_path = tmp_path / "test.db"
+    initialize_database(database_path)
+    repository = IOCRepository(database_path)
+
+    repository.add(make_ioc("feodo-tracker"))
+    repository.add(make_ioc("threatfox"))
+
+    result = repository.get_correlation("198.51.100.10")
+
+    assert result is not None
+    assert result["source_count"] == 2
+    assert result["is_multi_source"] is True
+
+    source_names = {source["source_name"] for source in result["sources"]}
+    assert source_names == {"feodo-tracker", "threatfox"}
+
+
+def test_correlation_returns_none_for_unknown_ioc(tmp_path):
+    database_path = tmp_path / "test.db"
+    initialize_database(database_path)
+    repository = IOCRepository(database_path)
+
+    assert repository.get_correlation("203.0.113.99") is None
+
+def test_multi_source_iocs_returns_only_correlated_indicators(tmp_path):
+    database_path = tmp_path / "test.db"
+    initialize_database(database_path)
+    repository = IOCRepository(database_path)
+
+    repository.add(make_ioc("feodo-tracker"))
+    repository.add(make_ioc("threatfox"))
+
+    single_source = IOC(
+        value="203.0.113.50",
+        ioc_type=IOCType.IP,
+        source="feodo-tracker",
+    )
+    repository.add(single_source)
+
+    results = repository.get_multi_source_iocs()
+
+    assert len(results) == 1
+    assert results[0]["value"] == "198.51.100.10"
+    assert results[0]["source_count"] == 2
+    assert set(results[0]["source_names"].split(",")) == {
+        "feodo-tracker",
+        "threatfox",
+    }
+
+
+def test_multi_source_iocs_supports_minimum_source_count(tmp_path):
+    database_path = tmp_path / "test.db"
+    initialize_database(database_path)
+    repository = IOCRepository(database_path)
+
+    repository.add(make_ioc("feodo-tracker"))
+    repository.add(make_ioc("threatfox"))
+    repository.add(make_ioc("another-feed"))
+
+    assert len(repository.get_multi_source_iocs(min_sources=3)) == 1
+    assert repository.get_multi_source_iocs(min_sources=4) == []
+
+
+def test_multi_source_iocs_rejects_invalid_minimum(tmp_path):
+    database_path = tmp_path / "test.db"
+    initialize_database(database_path)
+    repository = IOCRepository(database_path)
+
+    with pytest.raises(ValueError, match="at least 2"):
+        repository.get_multi_source_iocs(min_sources=1)
