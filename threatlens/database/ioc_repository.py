@@ -1,4 +1,3 @@
-
 import json
 from datetime import datetime, timezone
 from pathlib import Path
@@ -249,40 +248,6 @@ class IOCRepository:
             ).fetchall()
 
             return [dict(row) for row in rows]
-
-        finally:
-            connection.close()
-
-
-
-    def get_correlation(self, value: str) -> dict | None:
-        """Return an IOC with its source count and source evidence."""
-
-        connection = get_connection(self.database_path)
-
-        try:
-            row = connection.execute(
-                """
-                SELECT
-                    i.*,
-                    COUNT(s.id) AS source_count
-                FROM iocs AS i
-                LEFT JOIN ioc_sources AS s ON s.ioc_id = i.id
-                WHERE i.value = ?
-                GROUP BY i.id
-                LIMIT 1
-                """,
-                (value,),
-            ).fetchone()
-
-            if row is None:
-                return None
-
-            result = dict(row)
-            result["sources"] = self.get_sources(value)
-            result["is_multi_source"] = result["source_count"] > 1
-
-            return result
 
         finally:
             connection.close()
