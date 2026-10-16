@@ -452,3 +452,121 @@ def test_history_returns_error_when_no_events_exist(monkeypatch, capsys):
 
     assert cli.main() == 1
     assert "No evidence history found" in capsys.readouterr().err
+
+
+class FreshnessRepository(FakeRepository):
+    def get_correlation(self, value, ioc_type=None):
+        if value == "missing.test":
+            return None
+
+        return {
+            "value": value,
+            "ioc_type": ioc_type or "domain",
+            "sources": [
+                {
+                    "source_name": "test-feed",
+                    "source_last_seen": "2026-10-15T12:00:00+00:00",
+                    "collected_at": "2026-10-16T08:00:00+00:00",
+                }
+            ],
+        }
+
+
+class UnknownFreshnessRepository(FreshnessRepository):
+    def get_correlation(self, value, ioc_type=None):
+        record = super().get_correlation(value, ioc_type)
+        if record is not None:
+            record["sources"] = [
+                {
+                    "source_name": "test-feed",
+                    "source_last_seen": None,
+                    "collected_at": "2026-10-16T08:00:00+00:00",
+                }
+            ]
+        return record
+
+
+def test_freshness_displays_source_status(monkeypatch, capsys):
+    setup_cli(
+        monkeypatch,
+        ["freshness", "example.test", "--type", "domain"],
+    )
+    monkeypatch.setattr(cli, "IOCRepository", FreshnessRepository)
+
+    assert cli.main() == 0
+
+    output = capsys.readouterr().out
+    assert "THREATLENS — IOC INTELLIGENCE FRESHNESS" in output
+    assert "Overall status:" in output
+    assert "Source:          test-feed" in output
+    assert "Last observed:" in output
+    assert "Freshness is separate from risk" in output
+
+
+def test_freshness_json_is_valid_and_machine_readable(
+    monkeypatch, capsys
+):
+    import json
+
+    setup_cli(
+        monkeypatch,
+        [
+            "freshness", "example.test",
+            "--type", "domain",
+            "--format", "json",
+        ],
+    )
+    monkeypatch.setattr(cli, "IOCRepository", FreshnessRepository)
+
+    assert cli.main() == 0
+
+    captured = capsys.readouterr()
+    result = json.loads(captured.out)
+
+    assert captured.err == ""
+    assert result["assessment_type"] == "ioc_freshness"
+    assert result["schema_version"] == 1
+    assert result["indicator"]["value"] == "example.test"
+    assert result["indicator"]["type"] == "domain"
+    assert result["source_count"] == 1
+    assert result["sources"][0]["source_name"] == "test-feed"
+
+
+def test_freshness_returns_error_for_unknown_ioc(monkeypatch, capsys):
+    setup_cli(
+        monkeypatch,
+        ["freshness", "missing.test", "--type", "domain"],
+    )
+    monkeypatch.setattr(cli, "IOCRepository", FreshnessRepository)
+
+    assert cli.main() == 1
+
+    captured = capsys.readouterr()
+    assert "IOC not found: missing.test" in captured.err
+    assert captured.out == ""
+
+
+def test_freshness_missing_observation_timestamp_is_unknown(
+    monkeypatch, capsys
+):
+    import json
+
+    setup_cli(
+        monkeypatch,
+        [
+            "freshness", "example.test",
+            "--type", "domain",
+            "--format", "json",
+        ],
+    )
+    monkeypatch.setattr(
+        cli, "IOCRepository", UnknownFreshnessRepository
+    )
+
+    assert cli.main() == 0
+
+    result = json.loads(capsys.readouterr().out)
+    assert result["overall_status"] == "unknown"
+    assert result["status_counts"]["unknown"] == 1
+    assert result["sources"][0]["status"] == "unknown"
+    assert result["sources"][0]["age_days"] is None

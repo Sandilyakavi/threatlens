@@ -6,6 +6,7 @@ import sys
 from threatlens.database.ioc_repository import IOCRepository
 from threatlens.database.schema import initialize_database
 from threatlens.detection.risk_service import RiskService
+from threatlens.detection.freshness import assess_ioc_freshness
 from threatlens.models.ioc import IOCType
 
 
@@ -20,11 +21,12 @@ def build_parser() -> argparse.ArgumentParser:
         required=True,
     )
 
-    for command in ("assess", "report", "history"):
+    for command in ("assess", "report", "history", "freshness"):
         help_text = {
             "assess": "Assess IOC risk",
             "report": "Generate an IOC investigation report",
             "history": "Show the recorded evidence timeline for an IOC",
+            "freshness": "Assess source intelligence observation freshness",
         }[command]
 
         command_parser = subparsers.add_parser(
@@ -58,6 +60,14 @@ def build_parser() -> argparse.ArgumentParser:
                 choices=("text", "json"),
                 default="text",
                 help="History output format (default: text)",
+            )
+
+        if command == "freshness":
+            command_parser.add_argument(
+                "--format",
+                choices=("text", "json"),
+                default="text",
+                help="Freshness output format (default: text)",
             )
 
     return parser
@@ -322,6 +332,62 @@ def print_history(
     return 0
 
 
+def print_freshness(
+    value: str,
+    ioc_type: str,
+    output_format: str = "text",
+) -> int:
+    """Print source-specific IOC observation freshness."""
+    repository = IOCRepository()
+    record = repository.get_correlation(value, ioc_type)
+
+    if record is None:
+        print(
+            f"IOC not found: {value} (type: {ioc_type})",
+            file=sys.stderr,
+        )
+        return 1
+
+    result = assess_ioc_freshness(record.get("sources", []))
+    payload = {
+        "assessment_type": "ioc_freshness",
+        "schema_version": 1,
+        "indicator": {"value": value, "type": ioc_type},
+        **result,
+    }
+
+    if output_format == "json":
+        print(json.dumps(payload, indent=2, ensure_ascii=False))
+        return 0
+
+    print("=" * 64)
+    print("THREATLENS — IOC INTELLIGENCE FRESHNESS")
+    print("=" * 64)
+    print(f"IOC:             {value}")
+    print(f"Type:            {ioc_type}")
+    print(f"Overall status:  {result['overall_status'].upper()}")
+    print(f"Sources:         {result['source_count']}")
+    print("Status counts:   " + ", ".join(
+        f"{status}={count}"
+        for status, count in result["status_counts"].items()
+    ))
+
+    for source in result["sources"]:
+        print(f"\nSource:          {source['source_name']}")
+        print(f"Status:          {source['status'].upper()}")
+        print(f"Last observed:   {source['last_seen'] or 'Unknown'}")
+        print(f"Collected at:    {source['collected_at'] or 'Unknown'}")
+        print(f"Observation age: "
+              f"{source['age_days']} days"
+              if source["age_days"] is not None
+              else "Observation age: Unknown")
+        print(f"Explanation:     {source['explanation']}")
+
+    print("=" * 64)
+    print("Freshness is separate from risk; unknown does not mean safe.")
+    return 0
+
+
 def print_assessment(value: str, ioc_type: str) -> int:
     repository = IOCRepository()
     record = repository.get_correlation(value, ioc_type)
@@ -531,6 +597,9 @@ def main() -> int:
 
     if args.command == "history":
         return print_history(args.value, ioc_type, args.format)
+
+    if args.command == "freshness":
+        return print_freshness(args.value, ioc_type, args.format)
 
     parser.error("Unsupported command")
     return 2
