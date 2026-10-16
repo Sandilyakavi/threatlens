@@ -7,3 +7,6 @@ data/processed/*
 logs/*
 .pytest_cache/
 data/*.db
+
+# Temporary local backups
+*.bak-*

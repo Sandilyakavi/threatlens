@@ -9,6 +9,8 @@ from threatlens.detection.risk_service import RiskService
 from threatlens.detection.freshness import assess_ioc_freshness
 from threatlens.models.ioc import IOCType
 from threatlens.maintenance import backfill_threatfox
+from threatlens.validation.dataset import load_dataset
+from threatlens.validation.metrics import calculate_metrics, predict_from_score
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -70,6 +72,28 @@ def build_parser() -> argparse.ArgumentParser:
                 default="text",
                 help="Freshness output format (default: text)",
             )
+
+    validation_parser = subparsers.add_parser(
+        "validate-dataset",
+        help="Validate reviewed IOC labels and calculate available evaluation metrics",
+    )
+    validation_parser.add_argument(
+        "--dataset",
+        default="data/validation/labels.jsonl",
+        help="JSONL dataset path (default: data/validation/labels.jsonl)",
+    )
+    validation_parser.add_argument(
+        "--threshold",
+        type=int,
+        default=60,
+        help="Score threshold for a malicious prediction (default: 60)",
+    )
+    validation_parser.add_argument(
+        "--format",
+        choices=("text", "json"),
+        default="text",
+        help="Output format (default: text)",
+    )
 
     maintenance_parser = subparsers.add_parser(
         "maintenance",
@@ -686,6 +710,72 @@ def main() -> int:
             return 1
 
         print(json.dumps(result, indent=2))
+        return 0
+
+    if args.command == "validate-dataset":
+        if not 0 <= args.threshold <= 100:
+            print("Threshold must be from 0 to 100.", file=sys.stderr)
+            return 2
+
+        records, errors = load_dataset(args.dataset)
+        if errors:
+            result = {
+                "status": "invalid_dataset",
+                "dataset": args.dataset,
+                "valid_records": len(records),
+                "errors": errors,
+            }
+            if args.format == "json":
+                print(json.dumps(result, indent=2))
+            else:
+                print(f"Dataset: {args.dataset}")
+                print(f"Valid records: {len(records)}")
+                for error in errors:
+                    print(f"ERROR: {error}")
+            return 1
+
+        comparisons = [
+            {
+                "label": record["label"],
+                "prediction": predict_from_score(
+                    record.get("score"),
+                    threshold=args.threshold,
+                ),
+            }
+            for record in records
+        ]
+        metrics = calculate_metrics(comparisons)
+        result = {
+            "status": "ok",
+            "dataset": args.dataset,
+            "threshold": args.threshold,
+            "records_loaded": len(records),
+            "scores_available": sum(record.get("score") is not None for record in records),
+            **metrics,
+            "interpretation": (
+                "Metrics compare recorded scores with reviewed labels. "
+                "Unknown labels and unavailable scores are not counted as evaluated."
+            ),
+        }
+
+        if args.format == "json":
+            print(json.dumps(result, indent=2))
+        else:
+            print(f"Dataset: {args.dataset}")
+            print(f"Threshold: {args.threshold}")
+            print(f"Records loaded: {result['records_loaded']}")
+            print(f"Scores available: {result['scores_available']}")
+            print(f"Evaluated samples: {metrics['counts']['evaluated']}")
+            print(f"Unknown labels: {metrics['counts']['unknown_ground_truth']}")
+            print(f"Unavailable predictions: {metrics['counts']['unavailable_predictions']}")
+            print("Confusion matrix:")
+            for name, value in metrics["confusion_matrix"].items():
+                print(f"  {name}: {value}")
+            print("Metrics:")
+            for name, value in metrics["metrics"].items():
+                formatted = "N/A" if value is None else f"{value:.4f}"
+                print(f"  {name}: {formatted}")
+            print(result["interpretation"])
         return 0
 
     # Create any missing tables/indexes before database operations.
