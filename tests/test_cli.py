@@ -100,3 +100,82 @@ def test_assess_requires_type_for_ambiguous_ioc(monkeypatch, capsys):
     error = capsys.readouterr().err
     assert "Multiple IOC types match this value" in error
     assert "domain, url" in error
+
+def test_report_displays_indicator_risk_and_source_evidence(
+    monkeypatch, capsys
+):
+    setup_cli(monkeypatch, ["report", "example.test", "--type", "domain"])
+
+    class ReportRepository(FakeRepository):
+        def get_correlation(self, value, ioc_type=None):
+            return {
+                "value": value,
+                "ioc_type": ioc_type,
+                "threat_level": "low",
+                "confidence": 90,
+                "first_seen": None,
+                "last_seen": None,
+                "created_at": "2026-10-15T08:00:00+00:00",
+                "source_count": 1,
+                "sources": [
+                    {
+                        "source_name": "threatfox",
+                        "source_first_seen": None,
+                        "source_last_seen": None,
+                        "collected_at": "2026-10-15T08:01:00+00:00",
+                        "source_metadata": (
+                            '{"threat_type": "elf.mirai", '
+                            '"tags": ["threatfox", "elf.mirai"]}'
+                        ),
+                    }
+                ],
+            }
+
+    monkeypatch.setattr(cli, "IOCRepository", ReportRepository)
+
+    assert cli.main() == 0
+
+    output = capsys.readouterr().out
+    assert "THREATLENS — IOC INVESTIGATION REPORT" in output
+    assert "Risk score:            66/100" in output
+    assert "elf.mirai" in output
+    assert "Source 1: threatfox" in output
+    assert "Source independence has not been independently verified." in output
+
+
+def test_report_warns_about_conflicting_threat_types(
+    monkeypatch, capsys
+):
+    setup_cli(monkeypatch, ["report", "example.test", "--type", "domain"])
+
+    class ConflictingRepository(FakeRepository):
+        def get_correlation(self, value, ioc_type=None):
+            return {
+                "value": value,
+                "ioc_type": ioc_type,
+                "threat_level": "medium",
+                "confidence": 50,
+                "first_seen": None,
+                "last_seen": None,
+                "created_at": None,
+                "source_count": 2,
+                "sources": [
+                    {
+                        "source_name": "feed-one",
+                        "source_metadata": '{"threat_type": "botnet", "tags": []}',
+                    },
+                    {
+                        "source_name": "feed-two",
+                        "source_metadata": '{"threat_type": "phishing", "tags": []}',
+                    },
+                ],
+            }
+
+    monkeypatch.setattr(cli, "IOCRepository", ConflictingRepository)
+
+    assert cli.main() == 0
+
+    output = capsys.readouterr().out
+    assert "botnet" in output
+    assert "phishing" in output
+    assert "Sources report multiple threat types." in output

@@ -1,5 +1,6 @@
 
 import argparse
+import json
 import sys
 
 from threatlens.database.ioc_repository import IOCRepository
@@ -18,68 +19,91 @@ def build_parser() -> argparse.ArgumentParser:
         required=True,
     )
 
-    assess_parser = subparsers.add_parser(
-        "assess",
-        help="Assess the risk of an IOC stored in the database",
-    )
+    for command in ("assess", "report"):
+        help_text = (
+            "Assess IOC risk"
+            if command == "assess"
+            else "Generate an IOC investigation report"
+        )
 
-    assess_parser.add_argument(
-        "value",
-        help="IOC value to assess",
-    )
+        command_parser = subparsers.add_parser(
+            command,
+            help=help_text,
+        )
 
-    assess_parser.add_argument(
-        "--type",
-        dest="ioc_type",
-        choices=[item.value for item in IOCType],
-        help="IOC type, required when a value matches multiple types",
-    )
+        command_parser.add_argument(
+            "value",
+            help="IOC value to investigate",
+        )
+
+        command_parser.add_argument(
+            "--type",
+            dest="ioc_type",
+            choices=[item.value for item in IOCType],
+            help="IOC type, required when a value matches multiple types",
+        )
 
     return parser
 
 
-def main() -> int:
-    parser = build_parser()
-    args = parser.parse_args()
+def resolve_ioc_type(
+    repository: IOCRepository,
+    value: str,
+    requested_type: str | None,
+) -> str | None:
+    if requested_type is not None:
+        return requested_type
 
-    if args.command != "assess":
-        parser.error("Unsupported command")
+    matching_types = repository.find_types_by_value(value)
 
+    if not matching_types:
+        print(f"IOC not found: {value}", file=sys.stderr)
+        return None
+
+    if len(matching_types) > 1:
+        available_types = ", ".join(matching_types)
+
+        print(
+            "Multiple IOC types match this value; specify --type. "
+            f"Available types: {available_types}",
+            file=sys.stderr,
+        )
+        return None
+
+    return matching_types[0]
+
+
+def parse_source_metadata(source: dict) -> dict:
+    """Safely parse metadata recorded for one intelligence source."""
+    metadata = source.get("source_metadata")
+
+    if isinstance(metadata, str):
+        try:
+            metadata = json.loads(metadata)
+        except (json.JSONDecodeError, TypeError):
+            return {}
+
+    if isinstance(metadata, dict):
+        return metadata
+
+    return {}
+
+
+def print_assessment(value: str, ioc_type: str) -> int:
     repository = IOCRepository()
-
-    # Resolve the IOC type before requesting a risk assessment.
-    if args.ioc_type is None:
-        matching_types = repository.find_types_by_value(args.value)
-
-        if not matching_types:
-            print(f"IOC not found: {args.value}", file=sys.stderr)
-            return 1
-
-        if len(matching_types) > 1:
-            print(
-                "Multiple IOC types match this value; specify --type. "
-                f"Available types: {', '.join(matching_types)}",
-                file=sys.stderr,
-            )
-            return 2
-
-        ioc_type = matching_types[0]
-    else:
-        ioc_type = args.ioc_type
-
-    record = repository.get_correlation(args.value, ioc_type)
+    record = repository.get_correlation(value, ioc_type)
 
     if record is None:
         print(
-            f"IOC not found: {args.value} (type: {ioc_type})",
+            f"IOC not found: {value} (type: {ioc_type})",
             file=sys.stderr,
         )
         return 1
 
-    result = RiskService().assess(args.value, ioc_type)
+    result = RiskService().assess(value, ioc_type)
 
     if result is None:
-        print(f"Unable to assess IOC: {args.value}", file=sys.stderr)
+        print(f"Unable to assess IOC: {value}", file=sys.stderr)
         return 1
 
     print(f"IOC:        {record['value']}")
@@ -95,6 +119,202 @@ def main() -> int:
         print("  No supporting evidence available.")
 
     return 0
+
+
+def print_report(value: str, ioc_type: str) -> int:
+    repository = IOCRepository()
+    record = repository.get_correlation(value, ioc_type)
+
+    if record is None:
+        print(
+            f"IOC not found: {value} (type: {ioc_type})",
+            file=sys.stderr,
+        )
+        return 1
+
+    assessment = RiskService().assess(value, ioc_type)
+
+    if assessment is None:
+        print(f"Unable to assess IOC: {value}", file=sys.stderr)
+        return 1
+
+    sources = record.get("sources", [])
+    threat_types: set[str] = set()
+    tags: set[str] = set()
+
+    stored_threat_type = record.get("threat_type")
+
+    if isinstance(stored_threat_type, str) and stored_threat_type.strip():
+        threat_types.add(stored_threat_type.strip())
+
+    for source in sources:
+        metadata = parse_source_metadata(source)
+
+        threat_type = metadata.get("threat_type")
+
+        if isinstance(threat_type, str) and threat_type.strip():
+            threat_types.add(threat_type.strip())
+
+        source_tags = metadata.get("tags", [])
+
+        if isinstance(source_tags, list):
+            tags.update(
+                tag.strip()
+                for tag in source_tags
+                if isinstance(tag, str) and tag.strip()
+            )
+
+    print("=" * 64)
+    print("THREATLENS — IOC INVESTIGATION REPORT")
+    print("=" * 64)
+
+    print("\n[1] Indicator")
+    print(f"Value:                {record['value']}")
+    print(f"Type:                 {record['ioc_type']}")
+    print(
+        f"Threat level stored:  "
+        f"{record.get('threat_level') or 'Unknown'}"
+    )
+    print(f"First seen:           {record.get('first_seen') or 'Unknown'}")
+    print(f"Last seen:            {record.get('last_seen') or 'Unknown'}")
+    print(f"Created at:           {record.get('created_at') or 'Unknown'}")
+
+    print("\n[2] Risk Assessment")
+    print(f"Risk score:            {assessment.score}/100")
+    print(f"Risk level:            {assessment.level.upper()}")
+    print(f"Confidence:            {record.get('confidence', 0)}/100")
+    print("Contributing factors:")
+
+    if assessment.reasons:
+        for reason in assessment.reasons:
+            print(f"  - {reason}")
+    else:
+        print("  No supporting evidence available.")
+
+    print("\n[3] Threat Context")
+    print("Reported threat types:")
+
+    if threat_types:
+        for threat_type in sorted(threat_types):
+            print(f"  - {threat_type}")
+    else:
+        print("  None recorded")
+
+    print("Raw feed tags (reported by sources):")
+
+    if tags:
+        for tag in sorted(tags):
+            print(f"  - {tag}")
+    else:
+        print("  None recorded")
+
+    if len(threat_types) > 1:
+        print(
+            "Warning: Sources report multiple threat types. "
+            "Review the evidence before drawing conclusions."
+        )
+
+    print("\n[4] Source Evidence")
+    print(
+        f"Distinct sources: "
+        f"{record.get('source_count', len(sources))}"
+    )
+
+    if not sources:
+        print("  No source-level records available.")
+    else:
+        for index, source in enumerate(sources, start=1):
+            metadata = parse_source_metadata(source)
+
+            print(
+                f"\n  Source {index}: "
+                f"{source.get('source_name', 'Unknown')}"
+            )
+
+            print(
+                f"    First seen:  "
+                f"{source.get('source_first_seen') or 'Unknown'}"
+            )
+            print(
+                f"    Last seen:   "
+                f"{source.get('source_last_seen') or 'Unknown'}"
+            )
+            print(
+                f"    Collected:   "
+                f"{source.get('collected_at') or 'Unknown'}"
+            )
+
+            threat_type = metadata.get("threat_type")
+
+            if isinstance(threat_type, str) and threat_type.strip():
+                print(f"    Threat type: {threat_type.strip()}")
+            else:
+                print("    Threat type: Unknown")
+
+            source_tags = metadata.get("tags", [])
+
+            if isinstance(source_tags, list):
+                clean_tags = sorted(
+                    {
+                        tag.strip()
+                        for tag in source_tags
+                        if isinstance(tag, str) and tag.strip()
+                    }
+                )
+            else:
+                clean_tags = []
+
+            if clean_tags:
+                print(f"    Raw feed tags: {', '.join(clean_tags)}")
+            else:
+                print("    Raw feed tags: None recorded")
+
+            if not metadata:
+                print("    Metadata status: Missing or invalid")
+
+    print("\n[5] Evidence Limitations")
+    print(
+        "  - The risk score is a heuristic, not proof of malicious activity."
+    )
+    print(
+        "  - Source independence has not been independently verified."
+    )
+    print(
+        "  - Feed metadata is reported evidence, not independently "
+        "validated attribution."
+    )
+    print(
+        "  - Missing timestamps or metadata are shown as unknown."
+    )
+    print("=" * 64)
+
+    return 0
+
+
+def main() -> int:
+    parser = build_parser()
+    args = parser.parse_args()
+
+    repository = IOCRepository()
+
+    ioc_type = resolve_ioc_type(
+        repository,
+        args.value,
+        args.ioc_type,
+    )
+
+    if ioc_type is None:
+        matching_types = repository.find_types_by_value(args.value)
+        return 2 if len(matching_types) > 1 else 1
+
+    if args.command == "assess":
+        return print_assessment(args.value, ioc_type)
+
+    if args.command == "report":
+        return print_report(args.value, ioc_type)
+
+    parser.error("Unsupported command")
+    return 2
 
 
 if __name__ == "__main__":
