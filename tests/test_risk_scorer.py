@@ -59,3 +59,39 @@ def test_duplicate_and_blank_tags_do_not_inflate_score():
 
     assert len(tag_factors) == 1
     assert tag_factors[0].points == 10
+
+
+def test_threat_type_is_not_scored_again_as_a_tag():
+    result = assess_risk(
+        confidence=90,
+        threat_type="elf.mirai",
+        tags=["elf.mirai", "threatfox"],
+    )
+
+    assert result.score == 66
+    assert any(f.name == "threat_context" for f in result.factors)
+
+    tag_factor = next(f for f in result.factors if f.name == "tags")
+    assert tag_factor.points == 10
+    assert "elf.mirai" not in tag_factor.explanation
+    assert "threatfox" in tag_factor.explanation
+
+
+def test_threat_type_tag_matching_is_case_insensitive():
+    result = assess_risk(
+        confidence=50,
+        threat_type="ELF.Mirai",
+        tags=["elf.mirai"],
+    )
+
+    assert result.score == 40
+    assert not any(f.name == "tags" for f in result.factors)
+
+
+def test_non_string_tags_are_ignored():
+    result = assess_risk(
+        confidence=50,
+        tags=["c2", None, 123],
+    )
+
+    assert result.score == 30

@@ -127,6 +127,28 @@ class IOCRepository:
         finally:
             connection.close()
 
+    def find_types_by_value(self, value: str) -> list[str]:
+        """Return all distinct IOC types stored for a value."""
+
+        connection = get_connection(self.database_path)
+
+        try:
+            rows = connection.execute(
+                """
+                SELECT DISTINCT ioc_type
+                FROM iocs
+                WHERE value = ?
+                ORDER BY ioc_type
+                """,
+                (value,),
+            ).fetchall()
+
+            return [row["ioc_type"] for row in rows]
+
+        finally:
+            connection.close()
+
+
     def count(self) -> int:
         """Return the total number of unique IOCs."""
 
@@ -142,6 +164,30 @@ class IOCRepository:
         finally:
             connection.close()
 
+    def find_by_value_and_type(
+        self,
+        value: str,
+        ioc_type: str,
+    ) -> dict | None:
+        """Find an IOC by its exact value and type."""
+
+        connection = get_connection(self.database_path)
+
+        try:
+            row = connection.execute(
+                """
+                SELECT *
+                FROM iocs
+                WHERE value = ? AND ioc_type = ?
+                LIMIT 1
+                """,
+                (value, ioc_type),
+            ).fetchone()
+
+            return dict(row) if row is not None else None
+
+        finally:
+            connection.close()
 
     def get_sources(
         self,

@@ -39,6 +39,7 @@ def assess_risk(
 
     # Confidence contributes at most 40 points.
     confidence_points = round(confidence * 0.4)
+
     if confidence_points:
         factors.append(
             RiskFactor(
@@ -51,8 +52,10 @@ def assess_risk(
             )
         )
 
-    # Independent source corroboration contributes at most 30 points.
+    # Additional sources contribute at most 30 points.
+    # This assumes the recorded sources provide corroboration.
     source_points = min(max(source_count - 1, 0) * 15, 30)
+
     if source_points:
         factors.append(
             RiskFactor(
@@ -66,28 +69,49 @@ def assess_risk(
         )
 
     # Threat context contributes at most 20 points.
-    if threat_type and threat_type.strip():
+    normalized_threat_type = (
+        threat_type.strip().lower()
+        if isinstance(threat_type, str) and threat_type.strip()
+        else None
+    )
+
+    if normalized_threat_type:
         factors.append(
             RiskFactor(
                 name="threat_context",
                 points=20,
-                explanation=f"Threat type is identified as {threat_type} (+20).",
+                explanation=(
+                    f"Threat type is identified as "
+                    f"{threat_type.strip()} (+20)."
+                ),
             )
         )
 
-    # Tags are supporting context, not proof on their own.
-    meaningful_tags = sorted({
-        tag.strip().lower()
-        for tag in (tags or [])
-        if tag.strip()
-    })
+    # Tags contribute at most 10 points.
+    # Normalize tags and ignore invalid or empty values.
+    meaningful_tags = sorted(
+        {
+            tag.strip().lower()
+            for tag in (tags or [])
+            if isinstance(tag, str) and tag.strip()
+        }
+    )
+
+    # Do not count the exact threat type again as a tag.
+    if normalized_threat_type:
+        meaningful_tags = [
+            tag
+            for tag in meaningful_tags
+            if tag != normalized_threat_type
+        ]
+
     if meaningful_tags:
         factors.append(
             RiskFactor(
                 name="tags",
                 points=10,
                 explanation=(
-                    f"Feed provides contextual tags: "
+                    "Feed provides contextual tags: "
                     f"{', '.join(meaningful_tags)} (+10)."
                 ),
             )
