@@ -4,6 +4,7 @@ import json
 import sys
 
 from threatlens.database.ioc_repository import IOCRepository
+from threatlens.database.schema import initialize_database
 from threatlens.detection.risk_service import RiskService
 from threatlens.models.ioc import IOCType
 
@@ -19,12 +20,12 @@ def build_parser() -> argparse.ArgumentParser:
         required=True,
     )
 
-    for command in ("assess", "report"):
-        help_text = (
-            "Assess IOC risk"
-            if command == "assess"
-            else "Generate an IOC investigation report"
-        )
+    for command in ("assess", "report", "history"):
+        help_text = {
+            "assess": "Assess IOC risk",
+            "report": "Generate an IOC investigation report",
+            "history": "Show the recorded evidence timeline for an IOC",
+        }[command]
 
         command_parser = subparsers.add_parser(
             command,
@@ -49,6 +50,14 @@ def build_parser() -> argparse.ArgumentParser:
                 choices=("text", "json"),
                 default="text",
                 help="Report output format (default: text)",
+            )
+
+        if command == "history":
+            command_parser.add_argument(
+                "--format",
+                choices=("text", "json"),
+                default="text",
+                help="History output format (default: text)",
             )
 
     return parser
@@ -256,6 +265,63 @@ def build_report_data(
     }
 
 
+def print_history(
+    value: str,
+    ioc_type: str,
+    output_format: str = "text",
+) -> int:
+    """Print the recorded evidence history for an IOC."""
+    repository = IOCRepository()
+    history = repository.get_evidence_history(value, ioc_type)
+
+    if not history:
+        print(
+            f"No evidence history found for IOC: {value} (type: {ioc_type})",
+            file=sys.stderr,
+        )
+        return 1
+
+    if output_format == "json":
+        print(json.dumps({
+            "history_type": "ioc_evidence_history",
+            "schema_version": 1,
+            "indicator": {"value": value, "type": ioc_type},
+            "event_count": len(history),
+            "events": history,
+        }, indent=2, ensure_ascii=False))
+        return 0
+
+    print("=" * 64)
+    print("THREATLENS — IOC EVIDENCE TIMELINE")
+    print("=" * 64)
+    print(f"IOC:   {value}")
+    print(f"Type:  {ioc_type}")
+    print(f"Events: {len(history)}")
+
+    for index, event in enumerate(history, start=1):
+        print(f"\n[{index}] {event['event_type'].replace('_', ' ').upper()}")
+        print(f"  Source:   {event.get('source_name') or 'Unknown'}")
+        print(f"  Recorded: {event.get('recorded_at') or 'Unknown'}")
+
+        previous = event.get("previous_evidence")
+        current = event.get("current_evidence")
+
+        if previous is not None:
+            print("  Previous evidence:")
+            print("    " + json.dumps(
+                previous, sort_keys=True, ensure_ascii=False
+            ))
+        print("  Current evidence:")
+        print("    " + json.dumps(
+            current, sort_keys=True, ensure_ascii=False
+        ))
+
+    print("=" * 64)
+    print("Note: This timeline contains recorded feed evidence changes.")
+    print("It does not independently verify that a source's claims are true.")
+    return 0
+
+
 def print_assessment(value: str, ioc_type: str) -> int:
     repository = IOCRepository()
     record = repository.get_correlation(value, ioc_type)
@@ -443,6 +509,8 @@ def main() -> int:
     parser = build_parser()
     args = parser.parse_args()
 
+    # Create any missing tables/indexes before database operations.
+    initialize_database()
     repository = IOCRepository()
 
     ioc_type = resolve_ioc_type(
@@ -460,6 +528,9 @@ def main() -> int:
 
     if args.command == "report":
         return print_report(args.value, ioc_type, args.format)
+
+    if args.command == "history":
+        return print_history(args.value, ioc_type, args.format)
 
     parser.error("Unsupported command")
     return 2

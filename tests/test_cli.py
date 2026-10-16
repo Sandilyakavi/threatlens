@@ -58,6 +58,7 @@ class FakeRiskService:
 def setup_cli(monkeypatch, argv):
     monkeypatch.setattr(sys, "argv", ["threatlens", *argv])
     monkeypatch.setattr(cli, "IOCRepository", FakeRepository)
+    monkeypatch.setattr(cli, "initialize_database", lambda: None)
     monkeypatch.setattr(cli, "RiskService", FakeRiskService)
 
 
@@ -366,3 +367,88 @@ def test_build_report_data_marks_complete_timestamps():
         "partial": 0,
         "unavailable": 0,
     }
+
+
+class HistoryRepository(FakeRepository):
+    def get_evidence_history(self, value, ioc_type=None):
+        if value == "missing.test":
+            return []
+        return [
+            {
+                "id": 1,
+                "value": value,
+                "ioc_type": ioc_type,
+                "source_name": "test-feed",
+                "event_type": "source_added",
+                "previous_evidence": None,
+                "current_evidence": {
+                    "first_seen": None,
+                    "last_seen": None,
+                    "metadata": {"threat_type": "test-malware"},
+                },
+                "recorded_at": "2026-10-16T00:00:00+00:00",
+            },
+            {
+                "id": 2,
+                "value": value,
+                "ioc_type": ioc_type,
+                "source_name": "test-feed",
+                "event_type": "evidence_updated",
+                "previous_evidence": {"metadata": {"tags": ["old"]}},
+                "current_evidence": {"metadata": {"tags": ["new"]}},
+                "recorded_at": "2026-10-16T00:01:00+00:00",
+            },
+        ]
+
+
+def test_history_displays_evidence_timeline(monkeypatch, capsys):
+    setup_cli(
+        monkeypatch,
+        ["history", "example.test", "--type", "domain"],
+    )
+    monkeypatch.setattr(cli, "IOCRepository", HistoryRepository)
+
+    assert cli.main() == 0
+    output = capsys.readouterr().out
+    assert "THREATLENS — IOC EVIDENCE TIMELINE" in output
+    assert "SOURCE ADDED" in output
+    assert "EVIDENCE UPDATED" in output
+    assert "test-feed" in output
+    assert "test-malware" in output
+    assert '"old"' in output
+    assert '"new"' in output
+
+
+def test_history_json_is_valid_and_machine_readable(monkeypatch, capsys):
+    import json
+
+    setup_cli(
+        monkeypatch,
+        [
+            "history", "example.test",
+            "--type", "domain",
+            "--format", "json",
+        ],
+    )
+    monkeypatch.setattr(cli, "IOCRepository", HistoryRepository)
+
+    assert cli.main() == 0
+    captured = capsys.readouterr()
+    result = json.loads(captured.out)
+
+    assert captured.err == ""
+    assert result["history_type"] == "ioc_evidence_history"
+    assert result["event_count"] == 2
+    assert result["indicator"]["type"] == "domain"
+    assert result["events"][1]["event_type"] == "evidence_updated"
+
+
+def test_history_returns_error_when_no_events_exist(monkeypatch, capsys):
+    setup_cli(
+        monkeypatch,
+        ["history", "missing.test", "--type", "domain"],
+    )
+    monkeypatch.setattr(cli, "IOCRepository", HistoryRepository)
+
+    assert cli.main() == 1
+    assert "No evidence history found" in capsys.readouterr().err
