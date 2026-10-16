@@ -570,3 +570,120 @@ def test_freshness_missing_observation_timestamp_is_unknown(
     assert result["status_counts"]["unknown"] == 1
     assert result["sources"][0]["status"] == "unknown"
     assert result["sources"][0]["age_days"] is None
+
+
+def test_source_metadata_status_distinguishes_missing_invalid_and_available():
+    assert cli.source_metadata_status({}) == "missing"
+    assert cli.source_metadata_status({"source_metadata": None}) == "missing"
+    assert cli.source_metadata_status({"source_metadata": ""}) == "missing"
+    assert cli.source_metadata_status({"source_metadata": "{}"}) == "missing"
+
+    assert cli.source_metadata_status(
+        {"source_metadata": "{invalid json"}
+    ) == "invalid"
+    assert cli.source_metadata_status(
+        {"source_metadata": "[]"}
+    ) == "invalid"
+
+    assert cli.source_metadata_status(
+        {"source_metadata": '{"threat_type": "botnet"}'}
+    ) == "available"
+
+
+def test_report_summarizes_metadata_quality():
+    assessment = RiskAssessment(score=20, level="low", factors=())
+    record = {
+        "value": "example.test",
+        "ioc_type": "domain",
+        "confidence": 50,
+        "source_count": 3,
+        "sources": [
+            {
+                "source_name": "valid-feed",
+                "source_metadata": '{"threat_type": "botnet"}',
+            },
+            {
+                "source_name": "missing-feed",
+                "source_metadata": None,
+            },
+            {
+                "source_name": "invalid-feed",
+                "source_metadata": "{invalid json",
+            },
+        ],
+    }
+
+    report = cli.build_report_data(record, assessment)
+    sources = report["source_evidence"]["sources"]
+
+    assert [source["metadata_status"] for source in sources] == [
+        "available",
+        "missing",
+        "invalid",
+    ]
+    assert report["source_evidence"]["metadata_quality_summary"] == {
+        "available": 1,
+        "missing": 1,
+        "invalid": 1,
+    }
+
+
+def test_threat_type_correlation_accepts_normalized_agreement():
+    result = cli.assess_threat_type_correlation({
+        "threat_type": " Botnet ",
+        "sources": [
+            {"source_metadata": '{"threat_type": "botnet"}'},
+            {"source_metadata": '{"threat_type": "BOTNET"}'},
+        ],
+    })
+
+    assert result["status"] == "consistent"
+    assert result["normalized_distinct_label_count"] == 1
+    assert result["source_independence"] == "unverified"
+
+
+def test_threat_type_correlation_detects_conflicting_labels():
+    result = cli.assess_threat_type_correlation({
+        "sources": [
+            {"source_metadata": '{"threat_type": "botnet"}'},
+            {"source_metadata": '{"threat_type": "phishing"}'},
+        ],
+    })
+
+    assert result["status"] == "conflicting"
+    assert result["normalized_distinct_label_count"] == 2
+    assert "disagree" in result["explanation"]
+
+
+def test_threat_type_correlation_reports_insufficient_evidence():
+    result = cli.assess_threat_type_correlation({
+        "sources": [
+            {"source_metadata": None},
+            {"source_metadata": "{invalid json"},
+        ],
+    })
+
+    assert result["status"] == "insufficient_evidence"
+    assert result["normalized_distinct_label_count"] == 0
+    assert result["source_independence"] == "unverified"
+
+
+def test_report_conflict_flag_uses_normalized_threat_type_correlation():
+    assessment = RiskAssessment(score=20, level="low", factors=())
+    record = {
+        "value": "example.test",
+        "ioc_type": "domain",
+        "confidence": 50,
+        "source_count": 2,
+        "sources": [
+            {"source_name": "feed-one",
+             "source_metadata": '{"threat_type": " Botnet "}'},
+            {"source_name": "feed-two",
+             "source_metadata": '{"threat_type": "botnet"}'},
+        ],
+    }
+
+    report = cli.build_report_data(record, assessment)
+
+    assert report["threat_context"]["conflicting_threat_types"] is False
+    assert report["threat_context"]["correlation"]["status"] == "consistent"

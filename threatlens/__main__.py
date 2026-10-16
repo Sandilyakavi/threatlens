@@ -132,6 +132,25 @@ def resolve_ioc_type(
     return matching_types[0]
 
 
+def source_metadata_status(source: dict) -> str:
+    """Distinguish absent metadata from malformed or unusable metadata."""
+    raw = source.get("source_metadata")
+
+    if raw is None or raw == "":
+        return "missing"
+
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except (json.JSONDecodeError, TypeError):
+            return "invalid"
+
+    if not isinstance(raw, dict):
+        return "invalid"
+
+    return "available" if raw else "missing"
+
+
 def parse_source_metadata(source: dict) -> dict:
     """Safely parse metadata recorded for one intelligence source."""
     metadata = source.get("source_metadata")
@@ -170,6 +189,41 @@ def collect_report_context(record: dict) -> tuple[list[str], list[str]]:
             )
 
     return sorted(threat_types), sorted(tags)
+
+
+def assess_threat_type_correlation(
+    record: dict,
+) -> dict:
+    """Describe agreement between available threat-type labels."""
+    labels: set[str] = set()
+
+    stored_type = record.get("threat_type")
+    if isinstance(stored_type, str) and stored_type.strip():
+        labels.add(stored_type.strip().casefold())
+
+    for source in record.get("sources", []):
+        metadata = parse_source_metadata(source)
+        threat_type = metadata.get("threat_type")
+        if isinstance(threat_type, str) and threat_type.strip():
+            labels.add(threat_type.strip().casefold())
+
+    if not labels:
+        status = "insufficient_evidence"
+    elif len(labels) > 1:
+        status = "conflicting"
+    else:
+        status = "consistent"
+
+    return {
+        "status": status,
+        "normalized_distinct_label_count": len(labels),
+        "source_independence": "unverified",
+        "explanation": {
+            "consistent": "Available threat-type labels agree after normalization.",
+            "conflicting": "Available threat-type labels disagree; investigate the underlying feed evidence.",
+            "insufficient_evidence": "No usable threat-type labels are available.",
+        }[status],
+    }
 
 
 def build_report_data(
@@ -236,6 +290,7 @@ def build_report_data(
                 },
                 "threat_type": threat_type,
                 "raw_feed_tags": clean_tags,
+                "metadata_status": source_metadata_status(source),
                 "metadata_available": bool(metadata),
             }
         )
@@ -255,6 +310,14 @@ def build_report_data(
         ),
     }
 
+    metadata_quality_summary = {
+        status: sum(
+            item["metadata_status"] == status
+            for item in source_evidence
+        )
+        for status in ("available", "missing", "invalid")
+    }
+
     factors = [
         {
             "name": factor.name,
@@ -263,6 +326,7 @@ def build_report_data(
         }
         for factor in assessment.factors
     ]
+    threat_type_correlation = assess_threat_type_correlation(record)
 
     return {
         "report_type": "ioc_investigation",
@@ -290,7 +354,10 @@ def build_report_data(
         "threat_context": {
             "reported_threat_types": threat_types,
             "raw_feed_tags": tags,
-            "conflicting_threat_types": len(threat_types) > 1,
+            "conflicting_threat_types": (
+                threat_type_correlation["status"] == "conflicting"
+            ),
+            "correlation": threat_type_correlation,
         },
         "source_evidence": {
             "distinct_source_count": record.get(
@@ -298,6 +365,7 @@ def build_report_data(
                 len(sources),
             ),
             "timestamp_quality_summary": timestamp_quality_summary,
+            "metadata_quality_summary": metadata_quality_summary,
             "collection_timestamps_available": all(
                 bool(item.get("collected_at"))
                 for item in source_evidence
