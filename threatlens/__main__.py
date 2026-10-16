@@ -8,6 +8,7 @@ from threatlens.database.schema import initialize_database
 from threatlens.detection.risk_service import RiskService
 from threatlens.detection.freshness import assess_ioc_freshness
 from threatlens.models.ioc import IOCType
+from threatlens.maintenance import backfill_threatfox
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -69,6 +70,37 @@ def build_parser() -> argparse.ArgumentParser:
                 default="text",
                 help="Freshness output format (default: text)",
             )
+
+    maintenance_parser = subparsers.add_parser(
+        "maintenance",
+        help="Run database maintenance tasks",
+    )
+    maintenance_commands = maintenance_parser.add_subparsers(
+        dest="maintenance_command",
+        required=True,
+    )
+    backfill_parser = maintenance_commands.add_parser(
+        "backfill-threatfox",
+        help="Repair missing ThreatFox source timestamps",
+    )
+    backfill_parser.add_argument(
+        "--days",
+        type=int,
+        choices=range(1, 8),
+        default=7,
+        help="ThreatFox lookback window in days (default: 7)",
+    )
+    mode = backfill_parser.add_mutually_exclusive_group()
+    mode.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Preview proposed repairs without writing (default)",
+    )
+    mode.add_argument(
+        "--apply",
+        action="store_true",
+        help="Create a backup and apply validated repairs",
+    )
 
     return parser
 
@@ -574,6 +606,19 @@ def print_report(value: str, ioc_type: str, output_format: str = "text") -> int:
 def main() -> int:
     parser = build_parser()
     args = parser.parse_args()
+
+    if args.command == "maintenance":
+        try:
+            result = backfill_threatfox(
+                days=args.days,
+                dry_run=not args.apply,
+            )
+        except Exception as exc:
+            print(f"Maintenance failed: {exc}", file=sys.stderr)
+            return 1
+
+        print(json.dumps(result, indent=2))
+        return 0
 
     # Create any missing tables/indexes before database operations.
     initialize_database()
