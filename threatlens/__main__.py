@@ -152,17 +152,57 @@ def build_report_data(
         else:
             threat_type = threat_type.strip()
 
+        first_seen = source.get("source_first_seen")
+        last_seen = source.get("source_last_seen")
+
+        if first_seen and last_seen:
+            timestamp_quality = "complete"
+            timestamp_explanation = (
+                "Both feed-reported observation timestamps are available."
+            )
+        elif first_seen or last_seen:
+            timestamp_quality = "partial"
+            timestamp_explanation = (
+                "Only one feed-reported observation timestamp is available."
+            )
+        else:
+            timestamp_quality = "unavailable"
+            timestamp_explanation = (
+                "No feed-reported observation timestamps are available."
+            )
+
         source_evidence.append(
             {
                 "source_name": source.get("source_name", "Unknown"),
-                "first_seen": source.get("source_first_seen"),
-                "last_seen": source.get("source_last_seen"),
+                "first_seen": first_seen,
+                "last_seen": last_seen,
                 "collected_at": source.get("collected_at"),
+                "timestamp_quality": timestamp_quality,
+                "timestamp_quality_explanation": timestamp_explanation,
+                "timestamp_fields_available": {
+                    "first_seen": bool(first_seen),
+                    "last_seen": bool(last_seen),
+                },
                 "threat_type": threat_type,
                 "raw_feed_tags": clean_tags,
                 "metadata_available": bool(metadata),
             }
         )
+
+    timestamp_quality_summary = {
+        "complete": sum(
+            item["timestamp_quality"] == "complete"
+            for item in source_evidence
+        ),
+        "partial": sum(
+            item["timestamp_quality"] == "partial"
+            for item in source_evidence
+        ),
+        "unavailable": sum(
+            item["timestamp_quality"] == "unavailable"
+            for item in source_evidence
+        ),
+    }
 
     factors = [
         {
@@ -206,6 +246,11 @@ def build_report_data(
                 "source_count",
                 len(sources),
             ),
+            "timestamp_quality_summary": timestamp_quality_summary,
+            "collection_timestamps_available": all(
+                bool(item.get("collected_at"))
+                for item in source_evidence
+            ) if source_evidence else False,
             "sources": source_evidence,
         },
     }

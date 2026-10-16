@@ -249,6 +249,19 @@ def test_report_json_outputs_valid_machine_readable_json(
         "elf.mirai",
         "threatfox",
     ]
+    source = report["source_evidence"]["sources"][0]
+    assert source["timestamp_quality"] == "unavailable"
+    assert source["timestamp_fields_available"] == {
+        "first_seen": False,
+        "last_seen": False,
+    }
+    assert source["timestamp_quality_explanation"]
+    assert report["source_evidence"]["timestamp_quality_summary"] == {
+        "complete": 0,
+        "partial": 0,
+        "unavailable": 1,
+    }
+    assert report["source_evidence"]["collection_timestamps_available"] is True
 
 
 def test_report_defaults_to_text_format(monkeypatch, capsys):
@@ -278,3 +291,78 @@ def test_report_defaults_to_text_format(monkeypatch, capsys):
     output = capsys.readouterr().out
     assert "THREATLENS — IOC INVESTIGATION REPORT" in output
     assert not output.lstrip().startswith("{")
+
+def test_build_report_data_marks_partial_timestamps():
+    assessment = RiskAssessment(
+        score=20,
+        level="low",
+        factors=(),
+    )
+    record = {
+        "value": "example.test",
+        "ioc_type": "domain",
+        "threat_level": "low",
+        "confidence": 0,
+        "first_seen": "2026-10-10T00:00:00+00:00",
+        "last_seen": None,
+        "created_at": "2026-10-15T08:00:00+00:00",
+        "source_count": 1,
+        "sources": [
+            {
+                "source_name": "test-feed",
+                "source_first_seen": "2026-10-10T00:00:00+00:00",
+                "source_last_seen": None,
+                "collected_at": "2026-10-15T08:01:00+00:00",
+                "source_metadata": '{"threat_type": "test-malware", "tags": []}',
+            }
+        ],
+    }
+
+    report = cli.build_report_data(record, assessment)
+    source = report["source_evidence"]["sources"][0]
+
+    assert source["timestamp_quality"] == "partial"
+    assert source["timestamp_fields_available"] == {
+        "first_seen": True,
+        "last_seen": False,
+    }
+    assert report["source_evidence"]["timestamp_quality_summary"] == {
+        "complete": 0,
+        "partial": 1,
+        "unavailable": 0,
+    }
+
+
+def test_build_report_data_marks_complete_timestamps():
+    assessment = RiskAssessment(
+        score=20,
+        level="low",
+        factors=(),
+    )
+    record = {
+        "value": "example.test",
+        "ioc_type": "domain",
+        "threat_level": "low",
+        "confidence": 0,
+        "created_at": "2026-10-15T08:00:00+00:00",
+        "source_count": 1,
+        "sources": [
+            {
+                "source_name": "test-feed",
+                "source_first_seen": "2026-10-10T00:00:00+00:00",
+                "source_last_seen": "2026-10-12T00:00:00+00:00",
+                "collected_at": "2026-10-15T08:01:00+00:00",
+                "source_metadata": None,
+            }
+        ],
+    }
+
+    report = cli.build_report_data(record, assessment)
+    source = report["source_evidence"]["sources"][0]
+
+    assert source["timestamp_quality"] == "complete"
+    assert report["source_evidence"]["timestamp_quality_summary"] == {
+        "complete": 1,
+        "partial": 0,
+        "unavailable": 0,
+    }
