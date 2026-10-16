@@ -198,3 +198,56 @@ def test_multi_source_iocs_rejects_invalid_minimum(tmp_path):
 
     with pytest.raises(ValueError, match="at least 2"):
         repository.get_multi_source_iocs(min_sources=1)
+
+def test_reingestion_preserves_existing_metadata_when_new_metadata_is_missing(
+    tmp_path,
+):
+    import json
+    from datetime import datetime, timezone
+
+    database_path = tmp_path / "test.db"
+    initialize_database(database_path)
+    repository = IOCRepository(database_path)
+
+    original = make_ioc("threatfox")
+    original.first_seen = datetime(2026, 10, 10, tzinfo=timezone.utc)
+    original.last_seen = datetime(2026, 10, 12, tzinfo=timezone.utc)
+    repository.add(original)
+
+    incomplete = make_ioc("threatfox")
+    incomplete.threat_type = None
+    incomplete.tags = []
+    incomplete.first_seen = None
+    incomplete.last_seen = None
+    repository.add(incomplete)
+
+    sources = repository.get_sources(original.value, original.ioc_type.value)
+    assert len(sources) == 1
+
+    source = sources[0]
+    metadata = json.loads(source["source_metadata"])
+
+    assert metadata["threat_type"] == "test-malware"
+    assert set(metadata["tags"]) == {"c2", "test"}
+    assert source["source_first_seen"] == original.first_seen.isoformat()
+    assert source["source_last_seen"] == original.last_seen.isoformat()
+
+
+def test_reingestion_accumulates_new_tags_without_duplicates(tmp_path):
+    import json
+
+    database_path = tmp_path / "test.db"
+    initialize_database(database_path)
+    repository = IOCRepository(database_path)
+
+    original = make_ioc("threatfox")
+    repository.add(original)
+
+    updated = make_ioc("threatfox")
+    updated.tags = ["c2", "new-tag"]
+    repository.add(updated)
+
+    sources = repository.get_sources(original.value, original.ioc_type.value)
+    metadata = json.loads(sources[0]["source_metadata"])
+
+    assert metadata["tags"] == ["c2", "new-tag", "test"]

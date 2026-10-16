@@ -74,14 +74,22 @@ def parse_feed(records: list[dict]) -> list[IOC]:
 
 
 def _parse_datetime(value: str | None) -> datetime | None:
-    if not value:
+    """Parse an optional ISO timestamp without failing the whole feed."""
+    if not isinstance(value, str) or not value.strip():
         return None
 
-    return datetime.fromisoformat(value)
+    try:
+        return datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+    except ValueError:
+        return None
 
 
 def _parse_date(value: str | None) -> datetime | None:
-    if not value:
+    """Parse an optional YYYY-MM-DD date."""
+    if not isinstance(value, str) or not value.strip():
         return None
 
-    return datetime.strptime(value, "%Y-%m-%d")
+    try:
+        return datetime.strptime(value.strip(), "%Y-%m-%d")
+    except ValueError:
+        return None

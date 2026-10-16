@@ -55,11 +55,55 @@ class IOCRepository:
 
             ioc_id = row["id"]
 
-            metadata = json.dumps({
+            incoming_metadata = {
                 "threat_type": ioc.threat_type,
                 "tags": ioc.tags,
+            }
+
+            existing_source = connection.execute(
+                """
+                SELECT source_metadata
+                FROM ioc_sources
+                WHERE ioc_id = ? AND source_name = ?
+                """,
+                (ioc_id, ioc.source),
+            ).fetchone()
+
+            existing_metadata = {}
+            if existing_source and existing_source["source_metadata"]:
+                try:
+                    parsed = json.loads(existing_source["source_metadata"])
+                    if isinstance(parsed, dict):
+                        existing_metadata = parsed
+                except (json.JSONDecodeError, TypeError):
+                    pass
+
+            # Keep existing non-empty fields when incoming data is absent.
+            metadata = {
+                key: value
+                for key, value in existing_metadata.items()
+                if value is not None and value != "" and value != []
+            }
+
+            for key, value in incoming_metadata.items():
+                if value is not None and value != "" and value != []:
+                    metadata[key] = value
+
+            # Accumulate tags while filtering malformed values and duplicates.
+            old_tags = existing_metadata.get("tags", [])
+            new_tags = incoming_metadata.get("tags", [])
+            if not isinstance(old_tags, list):
+                old_tags = []
+            if not isinstance(new_tags, list):
+                new_tags = []
+
+            metadata["tags"] = sorted({
+                tag.strip()
+                for tag in old_tags + new_tags
+                if isinstance(tag, str) and tag.strip()
             })
 
+            encoded_metadata = json.dumps(metadata)
             now = datetime.now(timezone.utc).isoformat()
 
             connection.execute(
@@ -86,7 +130,7 @@ class IOCRepository:
                     ioc.source,
                     ioc.first_seen.isoformat() if ioc.first_seen else None,
                     ioc.last_seen.isoformat() if ioc.last_seen else None,
-                    metadata,
+                    encoded_metadata,
                     now,
                 ),
             )
