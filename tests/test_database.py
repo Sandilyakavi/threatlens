@@ -251,3 +251,157 @@ def test_reingestion_accumulates_new_tags_without_duplicates(tmp_path):
     metadata = json.loads(sources[0]["source_metadata"])
 
     assert metadata["tags"] == ["c2", "new-tag", "test"]
+
+def test_audit_history_records_source_added_and_ignores_unchanged_reingestion(
+    tmp_path,
+):
+    repository = IOCRepository(tmp_path / "audit.db")
+    initialize_database(tmp_path / "audit.db")
+    ioc = make_ioc("test-feed")
+
+    repository.add(ioc)
+    repository.add(ioc)
+
+    history = repository.get_evidence_history(ioc.value, ioc.ioc_type.value)
+    assert len(history) == 1
+    assert history[0]["event_type"] == "source_added"
+    assert history[0]["previous_evidence"] is None
+    assert history[0]["current_evidence"]["metadata"]["threat_type"] == (
+        "test-malware"
+    )
+    assert history[0]["recorded_at"]
+
+
+def test_audit_history_records_meaningful_metadata_update(tmp_path):
+    database_path = tmp_path / "audit.db"
+    initialize_database(database_path)
+    repository = IOCRepository(database_path)
+
+    original = make_ioc("test-feed")
+    repository.add(original)
+
+    updated = make_ioc("test-feed")
+    updated.tags = ["c2", "new-tag"]
+    repository.add(updated)
+
+    history = repository.get_evidence_history(
+        original.value, original.ioc_type.value
+    )
+    assert len(history) == 2
+    event = history[-1]
+    assert event["event_type"] == "evidence_updated"
+    assert set(event["previous_evidence"]["metadata"]["tags"]) == {
+        "c2", "test"
+    }
+    assert set(event["current_evidence"]["metadata"]["tags"]) == {
+        "c2", "new-tag", "test"
+    }
+
+
+def test_audit_history_preserves_existing_evidence_when_incoming_fields_missing(
+    tmp_path,
+):
+    database_path = tmp_path / "audit.db"
+    initialize_database(database_path)
+    repository = IOCRepository(database_path)
+
+    original = make_ioc("test-feed")
+    repository.add(original)
+
+    incomplete = make_ioc("test-feed")
+    incomplete.threat_type = None
+    incomplete.tags = []
+    incomplete.first_seen = None
+    incomplete.last_seen = None
+    repository.add(incomplete)
+
+    history = repository.get_evidence_history(
+        original.value, original.ioc_type.value
+    )
+    assert len(history) == 1
+    assert history[0]["event_type"] == "source_added"
+
+
+def test_audit_history_records_a_separate_source(tmp_path):
+    database_path = tmp_path / "audit.db"
+    initialize_database(database_path)
+    repository = IOCRepository(database_path)
+
+    repository.add(make_ioc("feed-one"))
+    repository.add(make_ioc("feed-two"))
+
+    history = repository.get_evidence_history(
+        "198.51.100.10", "ip"
+    )
+    assert [event["event_type"] for event in history] == [
+        "source_added", "source_added"
+    ]
+    assert {event["source_name"] for event in history} == {
+        "feed-one", "feed-two"
+    }
+
+
+def test_audit_history_survives_repeated_database_initialization(tmp_path):
+    from threatlens.database.connection import get_connection
+
+    database_path = tmp_path / "audit_migration.db"
+    initialize_database(database_path)
+    repository = IOCRepository(database_path)
+
+    repository.add(make_ioc("test-feed"))
+    before = repository.get_evidence_history(
+        "198.51.100.10", "ip"
+    )
+    assert len(before) == 1
+
+    # Simulate application startup against an existing database.
+    initialize_database(database_path)
+
+    after = repository.get_evidence_history(
+        "198.51.100.10", "ip"
+    )
+    assert len(after) == 1
+    assert after[0]["event_type"] == "source_added"
+
+    connection = get_connection(database_path)
+    try:
+        row = connection.execute(
+            """
+            SELECT name FROM sqlite_master
+            WHERE type = 'table' AND name = 'ioc_evidence_history'
+            """
+        ).fetchone()
+        assert row is not None
+    finally:
+        connection.close()
+
+
+def test_audit_insert_failure_rolls_back_ioc_and_source_changes(tmp_path):
+    import sqlite3
+    from threatlens.database.connection import get_connection
+
+    database_path = tmp_path / "audit_rollback.db"
+    initialize_database(database_path)
+    repository = IOCRepository(database_path)
+
+    connection = get_connection(database_path)
+    try:
+        connection.execute(
+            """
+            CREATE TRIGGER fail_audit_insert
+            BEFORE INSERT ON ioc_evidence_history
+            BEGIN
+                SELECT RAISE(ABORT, 'forced audit failure');
+            END
+            """
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+    with pytest.raises(sqlite3.IntegrityError, match="forced audit failure"):
+        repository.add(make_ioc("test-feed"))
+
+    assert repository.count() == 0
+    assert repository.get_sources("198.51.100.10", "ip") == []
+    assert repository.get_evidence_history("198.51.100.10", "ip") == []

@@ -62,7 +62,7 @@ class IOCRepository:
 
             existing_source = connection.execute(
                 """
-                SELECT source_metadata
+                SELECT source_first_seen, source_last_seen, source_metadata
                 FROM ioc_sources
                 WHERE ioc_id = ? AND source_name = ?
                 """,
@@ -106,6 +106,49 @@ class IOCRepository:
             encoded_metadata = json.dumps(metadata)
             now = datetime.now(timezone.utc).isoformat()
 
+            incoming_first_seen = (
+                ioc.first_seen.isoformat() if ioc.first_seen else None
+            )
+            incoming_last_seen = (
+                ioc.last_seen.isoformat() if ioc.last_seen else None
+            )
+
+            previous_evidence = None
+            if existing_source is not None:
+                previous_evidence = {
+                    "first_seen": existing_source["source_first_seen"],
+                    "last_seen": existing_source["source_last_seen"],
+                    "metadata": existing_metadata,
+                }
+
+            current_evidence = {
+                "first_seen": (
+                    incoming_first_seen
+                    if incoming_first_seen is not None
+                    else (
+                        existing_source["source_first_seen"]
+                        if existing_source is not None
+                        else None
+                    )
+                ),
+                "last_seen": (
+                    incoming_last_seen
+                    if incoming_last_seen is not None
+                    else (
+                        existing_source["source_last_seen"]
+                        if existing_source is not None
+                        else None
+                    )
+                ),
+                "metadata": metadata,
+            }
+
+            event_type = None
+            if existing_source is None:
+                event_type = "source_added"
+            elif previous_evidence != current_evidence:
+                event_type = "evidence_updated"
+
             connection.execute(
                 """
                 INSERT INTO ioc_sources (
@@ -128,12 +171,35 @@ class IOCRepository:
                 (
                     ioc_id,
                     ioc.source,
-                    ioc.first_seen.isoformat() if ioc.first_seen else None,
-                    ioc.last_seen.isoformat() if ioc.last_seen else None,
+                    incoming_first_seen,
+                    incoming_last_seen,
                     encoded_metadata,
                     now,
                 ),
             )
+
+            if event_type is not None:
+                connection.execute(
+                    """
+                    INSERT INTO ioc_evidence_history (
+                        ioc_id, source_name, event_type,
+                        previous_evidence, current_evidence, recorded_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        ioc_id,
+                        ioc.source,
+                        event_type,
+                        (
+                            json.dumps(previous_evidence, sort_keys=True)
+                            if previous_evidence is not None
+                            else None
+                        ),
+                        json.dumps(current_evidence, sort_keys=True),
+                        now,
+                    ),
+                )
 
             connection.commit()
             return ioc_id, is_new
@@ -308,6 +374,55 @@ class IOCRepository:
 
             return result
 
+        finally:
+            connection.close()
+
+    def get_evidence_history(
+        self,
+        value: str,
+        ioc_type: str | None = None,
+    ) -> list[dict]:
+        """Return recorded evidence changes for an IOC, oldest first."""
+
+        connection = get_connection(self.database_path)
+        try:
+            query = """
+                SELECT
+                    h.id,
+                    i.value,
+                    i.ioc_type,
+                    h.source_name,
+                    h.event_type,
+                    h.previous_evidence,
+                    h.current_evidence,
+                    h.recorded_at
+                FROM ioc_evidence_history AS h
+                JOIN iocs AS i ON i.id = h.ioc_id
+                WHERE i.value = ?
+            """
+            params: tuple = (value,)
+
+            if ioc_type is not None:
+                query += " AND i.ioc_type = ?"
+                params += (ioc_type,)
+
+            query += " ORDER BY h.id ASC"
+            rows = connection.execute(query, params).fetchall()
+
+            history = []
+            for row in rows:
+                item = dict(row)
+                item["previous_evidence"] = (
+                    json.loads(item["previous_evidence"])
+                    if item["previous_evidence"] is not None
+                    else None
+                )
+                item["current_evidence"] = json.loads(
+                    item["current_evidence"]
+                )
+                history.append(item)
+
+            return history
         finally:
             connection.close()
 

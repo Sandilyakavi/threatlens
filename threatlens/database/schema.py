@@ -49,6 +49,31 @@ def initialize_database(database_path: Path | None = None) -> None:
 
     connection.execute(
         """
+        CREATE TABLE IF NOT EXISTS ioc_evidence_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ioc_id INTEGER NOT NULL,
+            source_name TEXT NOT NULL,
+            event_type TEXT NOT NULL CHECK (
+                event_type IN ('source_added', 'evidence_updated')
+            ),
+            previous_evidence TEXT,
+            current_evidence TEXT NOT NULL,
+            recorded_at TEXT NOT NULL,
+            FOREIGN KEY (ioc_id) REFERENCES iocs(id)
+                ON DELETE CASCADE
+        )
+        """
+    )
+
+    connection.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_ioc_evidence_history_ioc
+        ON ioc_evidence_history(ioc_id, id)
+        """
+    )
+
+    connection.execute(
+        """
         CREATE INDEX IF NOT EXISTS idx_iocs_value
         ON iocs(value)
         """
