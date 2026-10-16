@@ -68,14 +68,20 @@ def parse_feed(records: list[dict]) -> list[IOC]:
 
 
 def _parse_datetime(value: str | None) -> datetime | None:
-    """Parse an optional ISO-format timestamp."""
-
-    if not value:
+    """Parse optional ISO timestamps and ThreatFox UTC-suffixed timestamps."""
+    if not isinstance(value, str) or not value.strip():
         return None
 
+    normalized = value.strip()
+
+    if normalized.endswith(" UTC"):
+        normalized = normalized[:-4] + "+00:00"
+    elif normalized.endswith("Z"):
+        normalized = normalized[:-1] + "+00:00"
+
     try:
-        return datetime.fromisoformat(value.replace("Z", "+00:00"))
-    except (ValueError, TypeError):
+        return datetime.fromisoformat(normalized)
+    except (ValueError, TypeError, OverflowError):
         return None
 
 

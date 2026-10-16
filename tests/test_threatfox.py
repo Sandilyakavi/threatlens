@@ -31,6 +31,23 @@ def test_parse_threatfox_ip_port_record():
     assert "threatfox" in iocs[0].tags
 
 
+def test_parse_threatfox_utc_suffixed_timestamps():
+    records = [
+        {
+            "ioc": "192.0.2.25",
+            "ioc_type": "ip",
+            "first_seen": "2026-10-16 06:56:55 UTC",
+            "last_seen": "2026-10-16 06:57:59 UTC",
+        }
+    ]
+
+    iocs = parse_feed(records)
+
+    assert len(iocs) == 1
+    assert iocs[0].first_seen.isoformat() == "2026-10-16T06:56:55+00:00"
+    assert iocs[0].last_seen.isoformat() == "2026-10-16T06:57:59+00:00"
+
+
 def test_skip_unsupported_indicator_type():
     records = [
         {
