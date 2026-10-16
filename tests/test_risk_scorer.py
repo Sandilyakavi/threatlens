@@ -61,20 +61,41 @@ def test_duplicate_and_blank_tags_do_not_inflate_score():
     assert tag_factors[0].points == 10
 
 
-def test_threat_type_is_not_scored_again_as_a_tag():
+def test_threat_type_and_source_tag_are_not_double_counted():
     result = assess_risk(
         confidence=90,
         threat_type="elf.mirai",
         tags=["elf.mirai", "threatfox"],
     )
 
-    assert result.score == 66
+    assert result.score == 56
+    assert result.level == "medium"
     assert any(f.name == "threat_context" for f in result.factors)
+    assert not any(f.name == "tags" for f in result.factors)
 
-    tag_factor = next(f for f in result.factors if f.name == "tags")
-    assert tag_factor.points == 10
-    assert "elf.mirai" not in tag_factor.explanation
-    assert "threatfox" in tag_factor.explanation
+
+@pytest.mark.parametrize(
+    "source_tag",
+    ["threatfox", "feodo-tracker", "THREATFOX"],
+)
+def test_source_identification_tags_do_not_add_risk_points(source_tag):
+    result = assess_risk(
+        confidence=50,
+        tags=[source_tag],
+    )
+
+    assert result.score == 20
+    assert not any(f.name == "tags" for f in result.factors)
+
+
+def test_meaningful_tag_still_contributes_risk_points():
+    result = assess_risk(
+        confidence=50,
+        tags=["c2"],
+    )
+
+    assert result.score == 30
+    assert any(f.name == "tags" for f in result.factors)
 
 
 def test_threat_type_tag_matching_is_case_insensitive():
@@ -95,3 +116,4 @@ def test_non_string_tags_are_ignored():
     )
 
     assert result.score == 30
+    assert any(f.name == "tags" for f in result.factors)

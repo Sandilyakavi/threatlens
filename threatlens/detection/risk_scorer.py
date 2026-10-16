@@ -88,12 +88,19 @@ def assess_risk(
         )
 
     # Tags contribute at most 10 points.
-    # Normalize tags and ignore invalid or empty values.
+    # Source-identification labels describe provenance, not threat severity.
+    source_identification_tags = {
+        "threatfox",
+        "feodo-tracker",
+    }
+
     meaningful_tags = sorted(
         {
-            tag.strip().lower()
+            tag.strip().casefold()
             for tag in (tags or [])
-            if isinstance(tag, str) and tag.strip()
+            if isinstance(tag, str)
+            and tag.strip()
+            and tag.strip().casefold() not in source_identification_tags
         }
     )
 
