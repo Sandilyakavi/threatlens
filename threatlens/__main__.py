@@ -43,6 +43,14 @@ def build_parser() -> argparse.ArgumentParser:
             help="IOC type, required when a value matches multiple types",
         )
 
+        if command == "report":
+            command_parser.add_argument(
+                "--format",
+                choices=("text", "json"),
+                default="text",
+                help="Report output format (default: text)",
+            )
+
     return parser
 
 
@@ -83,10 +91,124 @@ def parse_source_metadata(source: dict) -> dict:
         except (json.JSONDecodeError, TypeError):
             return {}
 
-    if isinstance(metadata, dict):
-        return metadata
+    return metadata if isinstance(metadata, dict) else {}
 
-    return {}
+
+def collect_report_context(record: dict) -> tuple[list[str], list[str]]:
+    """Collect unique threat types and raw tags from recorded evidence."""
+    threat_types: set[str] = set()
+    tags: set[str] = set()
+
+    stored_threat_type = record.get("threat_type")
+    if isinstance(stored_threat_type, str) and stored_threat_type.strip():
+        threat_types.add(stored_threat_type.strip())
+
+    for source in record.get("sources", []):
+        metadata = parse_source_metadata(source)
+
+        threat_type = metadata.get("threat_type")
+        if isinstance(threat_type, str) and threat_type.strip():
+            threat_types.add(threat_type.strip())
+
+        source_tags = metadata.get("tags", [])
+        if isinstance(source_tags, list):
+            tags.update(
+                tag.strip()
+                for tag in source_tags
+                if isinstance(tag, str) and tag.strip()
+            )
+
+    return sorted(threat_types), sorted(tags)
+
+
+def build_report_data(
+    record: dict,
+    assessment,
+) -> dict:
+    """Build a JSON-serializable IOC investigation report."""
+    sources = record.get("sources", [])
+    threat_types, tags = collect_report_context(record)
+
+    source_evidence = []
+
+    for source in sources:
+        metadata = parse_source_metadata(source)
+        source_tags = metadata.get("tags", [])
+
+        if isinstance(source_tags, list):
+            clean_tags = sorted(
+                {
+                    tag.strip()
+                    for tag in source_tags
+                    if isinstance(tag, str) and tag.strip()
+                }
+            )
+        else:
+            clean_tags = []
+
+        threat_type = metadata.get("threat_type")
+        if not isinstance(threat_type, str) or not threat_type.strip():
+            threat_type = None
+        else:
+            threat_type = threat_type.strip()
+
+        source_evidence.append(
+            {
+                "source_name": source.get("source_name", "Unknown"),
+                "first_seen": source.get("source_first_seen"),
+                "last_seen": source.get("source_last_seen"),
+                "collected_at": source.get("collected_at"),
+                "threat_type": threat_type,
+                "raw_feed_tags": clean_tags,
+                "metadata_available": bool(metadata),
+            }
+        )
+
+    factors = [
+        {
+            "name": factor.name,
+            "points": factor.points,
+            "explanation": factor.explanation,
+        }
+        for factor in assessment.factors
+    ]
+
+    return {
+        "report_type": "ioc_investigation",
+        "schema_version": 1,
+        "indicator": {
+            "value": record["value"],
+            "type": record["ioc_type"],
+            "stored_threat_level": record.get("threat_level"),
+            "first_seen": record.get("first_seen"),
+            "last_seen": record.get("last_seen"),
+            "created_at": record.get("created_at"),
+            "confidence": record.get("confidence", 0),
+        },
+        "risk_assessment": {
+            "score": assessment.score,
+            "maximum_score": 100,
+            "level": assessment.level,
+            "factors": factors,
+            "limitations": [
+                "The risk score is a heuristic, not proof of malicious activity.",
+                "Source independence has not been independently verified.",
+                "Feed metadata is reported evidence, not independently validated attribution.",
+            ],
+        },
+        "threat_context": {
+            "reported_threat_types": threat_types,
+            "raw_feed_tags": tags,
+            "conflicting_threat_types": len(threat_types) > 1,
+        },
+        "source_evidence": {
+            "distinct_source_count": record.get(
+                "source_count",
+                len(sources),
+            ),
+            "sources": source_evidence,
+        },
+    }
 
 
 def print_assessment(value: str, ioc_type: str) -> int:
@@ -121,7 +243,7 @@ def print_assessment(value: str, ioc_type: str) -> int:
     return 0
 
 
-def print_report(value: str, ioc_type: str) -> int:
+def print_report(value: str, ioc_type: str, output_format: str = "text") -> int:
     repository = IOCRepository()
     record = repository.get_correlation(value, ioc_type)
 
@@ -138,31 +260,13 @@ def print_report(value: str, ioc_type: str) -> int:
         print(f"Unable to assess IOC: {value}", file=sys.stderr)
         return 1
 
+    if output_format == "json":
+        report_data = build_report_data(record, assessment)
+        print(json.dumps(report_data, indent=2, ensure_ascii=False))
+        return 0
+
     sources = record.get("sources", [])
-    threat_types: set[str] = set()
-    tags: set[str] = set()
-
-    stored_threat_type = record.get("threat_type")
-
-    if isinstance(stored_threat_type, str) and stored_threat_type.strip():
-        threat_types.add(stored_threat_type.strip())
-
-    for source in sources:
-        metadata = parse_source_metadata(source)
-
-        threat_type = metadata.get("threat_type")
-
-        if isinstance(threat_type, str) and threat_type.strip():
-            threat_types.add(threat_type.strip())
-
-        source_tags = metadata.get("tags", [])
-
-        if isinstance(source_tags, list):
-            tags.update(
-                tag.strip()
-                for tag in source_tags
-                if isinstance(tag, str) and tag.strip()
-            )
+    threat_types, tags = collect_report_context(record)
 
     print("=" * 64)
     print("THREATLENS — IOC INVESTIGATION REPORT")
@@ -195,7 +299,7 @@ def print_report(value: str, ioc_type: str) -> int:
     print("Reported threat types:")
 
     if threat_types:
-        for threat_type in sorted(threat_types):
+        for threat_type in threat_types:
             print(f"  - {threat_type}")
     else:
         print("  None recorded")
@@ -203,7 +307,7 @@ def print_report(value: str, ioc_type: str) -> int:
     print("Raw feed tags (reported by sources):")
 
     if tags:
-        for tag in sorted(tags):
+        for tag in tags:
             print(f"  - {tag}")
     else:
         print("  None recorded")
@@ -230,7 +334,6 @@ def print_report(value: str, ioc_type: str) -> int:
                 f"\n  Source {index}: "
                 f"{source.get('source_name', 'Unknown')}"
             )
-
             print(
                 f"    First seen:  "
                 f"{source.get('source_first_seen') or 'Unknown'}"
@@ -311,7 +414,7 @@ def main() -> int:
         return print_assessment(args.value, ioc_type)
 
     if args.command == "report":
-        return print_report(args.value, ioc_type)
+        return print_report(args.value, ioc_type, args.format)
 
     parser.error("Unsupported command")
     return 2

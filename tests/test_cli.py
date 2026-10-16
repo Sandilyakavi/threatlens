@@ -179,3 +179,102 @@ def test_report_warns_about_conflicting_threat_types(
     assert "botnet" in output
     assert "phishing" in output
     assert "Sources report multiple threat types." in output
+
+def test_report_json_outputs_valid_machine_readable_json(
+    monkeypatch, capsys
+):
+    import json
+
+    setup_cli(
+        monkeypatch,
+        [
+            "report",
+            "example.test",
+            "--type",
+            "domain",
+            "--format",
+            "json",
+        ],
+    )
+
+    class JsonReportRepository(FakeRepository):
+        def get_correlation(self, value, ioc_type=None):
+            return {
+                "value": value,
+                "ioc_type": ioc_type,
+                "threat_level": "low",
+                "confidence": 90,
+                "first_seen": None,
+                "last_seen": None,
+                "created_at": "2026-10-15T08:00:00+00:00",
+                "source_count": 1,
+                "threat_type": None,
+                "sources": [
+                    {
+                        "source_name": "threatfox",
+                        "source_first_seen": None,
+                        "source_last_seen": None,
+                        "collected_at": "2026-10-15T08:01:00+00:00",
+                        "source_metadata": (
+                            '{"threat_type": "elf.mirai", '
+                            '"tags": ["threatfox", "elf.mirai"]}'
+                        ),
+                    }
+                ],
+            }
+
+    monkeypatch.setattr(cli, "IOCRepository", JsonReportRepository)
+
+    assert cli.main() == 0
+
+    captured = capsys.readouterr()
+    report = json.loads(captured.out)
+
+    assert captured.err == ""
+    assert report["report_type"] == "ioc_investigation"
+    assert report["schema_version"] == 1
+    assert report["indicator"]["value"] == "example.test"
+    assert report["indicator"]["type"] == "domain"
+    assert report["risk_assessment"]["score"] == 66
+    assert report["risk_assessment"]["level"] == "high"
+    assert report["risk_assessment"]["factors"][0]["name"] == "confidence"
+    assert report["threat_context"]["reported_threat_types"] == ["elf.mirai"]
+    assert report["threat_context"]["raw_feed_tags"] == [
+        "elf.mirai",
+        "threatfox",
+    ]
+    assert report["source_evidence"]["distinct_source_count"] == 1
+    assert report["source_evidence"]["sources"][0]["source_name"] == "threatfox"
+    assert report["source_evidence"]["sources"][0]["raw_feed_tags"] == [
+        "elf.mirai",
+        "threatfox",
+    ]
+
+
+def test_report_defaults_to_text_format(monkeypatch, capsys):
+    setup_cli(
+        monkeypatch,
+        ["report", "example.test", "--type", "domain"],
+    )
+
+    class TextReportRepository(FakeRepository):
+        def get_correlation(self, value, ioc_type=None):
+            return {
+                "value": value,
+                "ioc_type": ioc_type,
+                "threat_level": "low",
+                "confidence": 90,
+                "first_seen": None,
+                "last_seen": None,
+                "created_at": None,
+                "source_count": 1,
+                "sources": [],
+            }
+
+    monkeypatch.setattr(cli, "IOCRepository", TextReportRepository)
+
+    assert cli.main() == 0
+
+    output = capsys.readouterr().out
+    assert "THREATLENS — IOC INVESTIGATION REPORT" in output
+    assert not output.lstrip().startswith("{")
